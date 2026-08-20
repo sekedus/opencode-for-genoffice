@@ -1,0 +1,45 @@
+{
+  "name": "opencode-for-genoffice",
+  "version": "1.0.0",
+  "description": "Point an installed GenOffice at OpenCode Zen/Go models via an OpenAI chat-completions compatible endpoint",
+  "license": "GPL-3.0",
+  "type": "module",
+  "bin": {
+    "ocfgo": "patch-genoffice.mjs"
+  },
+  "main": "patch-genoffice.mjs",
+  "exports": {
+    ".": "./patch-genoffice.mjs"
+  },
+  "files": [
+    "patch-genoffice.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "genoffice",
+    "opencode",
+    "zen",
+    "go",
+    "electron",
+    "patch",
+    "openai-compatible",
+    "chat-completions"
+  ],
+  "scripts": {
+    "patch": "node patch-genoffice.mjs patch",
+    "restore": "node patch-genoffice.mjs restore",
+    "status": "node patch-genoffice.mjs status"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sekedus/opencode-for-genoffice.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sekedus/opencode-for-genoffice/issues"
+  },
+  "homepage": "https://github.com/sekedus/opencode-for-genoffice?tab=readme-ov-file#readme"
+}
