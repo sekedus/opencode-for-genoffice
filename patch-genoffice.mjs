@@ -231,6 +231,94 @@ const MAIN_REASONING_SHEETS_WIRE_CODE = `        onActivity: ping,
 const MAIN_REASONING_MASTER_MARKER = `__goReasoning += choice.delta.reasoning_content`
 const MAIN_REASONING_WIRE_MARKER = `onReasoning: (__goR) => {`
 
+// Renderer reasoning capture — the AI-panel bundles live OUTSIDE app.asar at
+// resources/modules/<app>/renderer/assets/index-*.js and are WIPED on every
+// GenOffice update (the asar patch survives in backups but the modules do not).
+// The patched main process already extracts reasoning_content and ships it in
+// the done chunk (`reasoning`); the renderers must (1) capture it per turn via
+// `onReasoning`, (2) store it on assistant history entries, and (3) forward it
+// on follow-up turns so the main-side openAiMessages echo has something to send.
+// These injections target the agent-core loop (same code in all five bundles).
+const REN_TRANSPORT_MARKER = `chunk.reasoning) cb.onReasoning?.`
+const REN_WIRE_MARKER = `onReasoning: (reasoning) => {`
+
+const REN_START_ANCHOR = `  startTurn() {
+    const generation = this.generation;
+    this.turnText = "";
+    this.toolCalls = [];
+    this.turnStopReason = null;`
+const REN_START_CODE = `  startTurn() {
+    const generation = this.generation;
+    this.turnText = "";
+    this.toolCalls = [];
+    this.turnReasoning = "";
+    this.turnStopReason = null;`
+
+const REN_WIRE_ANCHOR = `        onStopReason: (reason) => {
+          if (generation !== this.generation || settled) return;
+          this.turnStopReason = reason;
+        },
+        onDone: () => {`
+const REN_WIRE_CODE = `        onStopReason: (reason) => {
+          if (generation !== this.generation || settled) return;
+          this.turnStopReason = reason;
+        },
+        onReasoning: (reasoning) => {
+          if (generation !== this.generation || settled) return;
+          this.turnReasoning += reasoning;
+        },
+        onDone: () => {`
+
+const REN_TRANSPORT_ANCHOR = `          if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason);
+          cb.onDone();`
+const REN_TRANSPORT_CODE = `          if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason);
+          if (chunk.reasoning) cb.onReasoning?.(chunk.reasoning);
+          cb.onDone();`
+
+const REN_PUSH_TOOL_ANCHOR = `    this.history.push({
+      role: "assistant",
+      text: this.turnText,
+      toolCalls: toolCalls.map(({ id, name, input }) => ({ id, name, input }))
+    });`
+const REN_PUSH_TOOL_CODE = `    this.history.push({
+      role: "assistant",
+      text: this.turnText,
+      toolCalls: toolCalls.map(({ id, name, input }) => ({ id, name, input })),
+      ...this.turnReasoning ? { reasoning_content: this.turnReasoning } : {}
+    });`
+
+// Older builds used the shorthand `toolCalls` (the array is already normalized).
+const REN_PUSH_TOOL2_ANCHOR = `    this.history.push({
+      role: "assistant",
+      text: this.turnText,
+      toolCalls
+    });`
+const REN_PUSH_TOOL2_CODE = `    this.history.push({
+      role: "assistant",
+      text: this.turnText,
+      toolCalls,
+      ...this.turnReasoning ? { reasoning_content: this.turnReasoning } : {}
+    });`
+
+// The sheets bundle renames `name` to `name2` in its destructuring.
+const REN_PUSH_TOOL3_ANCHOR = `    this.history.push({
+      role: "assistant",
+      text: this.turnText,
+      toolCalls: toolCalls.map(({ id, name: name2, input }) => ({ id, name: name2, input }))
+    });`
+const REN_PUSH_TOOL3_CODE = `    this.history.push({
+      role: "assistant",
+      text: this.turnText,
+      toolCalls: toolCalls.map(({ id, name: name2, input }) => ({ id, name: name2, input })),
+      ...this.turnReasoning ? { reasoning_content: this.turnReasoning } : {}
+    });`
+
+const REN_PUSH_TERMINAL_ANCHOR = `    this.history.push({ role: "assistant", text: this.turnText || COMPLETED_VIA_TOOLS_TEXT });`
+const REN_PUSH_TERMINAL_CODE = `    this.history.push({ role: "assistant", text: this.turnText || COMPLETED_VIA_TOOLS_TEXT, ...this.turnReasoning ? { reasoning_content: this.turnReasoning } : {} });`
+
+const REN_PUSH_VALIDATE_ANCHOR = `    this.history.push({ role: "assistant", text: this.turnText });`
+const REN_PUSH_VALIDATE_CODE = `    this.history.push({ role: "assistant", text: this.turnText, ...this.turnReasoning ? { reasoning_content: this.turnReasoning } : {} });`
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -502,6 +590,111 @@ function isReasoningInjected(asarPath) {
   )
 }
 
+// -- Renderer modules (outside the asar; wiped on GenOffice updates) ---------
+
+export function rendererBundles(resourcesDir) {
+  const dir = path.join(resourcesDir, 'modules')
+  const found = []
+  if (!fs.existsSync(dir)) return found
+  for (const app of fs.readdirSync(dir)) {
+    const assetDir = path.join(dir, app, 'renderer', 'assets')
+    if (!fs.existsSync(assetDir)) continue
+    for (const f of fs.readdirSync(assetDir)) {
+      if (/^index-.+\.js$/.test(f)) found.push({ app, name: f, file: path.join(assetDir, f) })
+    }
+  }
+  return found.sort((a, b) => a.app.localeCompare(b.app))
+}
+
+export function rendererBundlePatched(file) {
+  if (!fs.existsSync(file)) return null
+  const c = fs.readFileSync(file, 'utf8')
+  return c.includes(REN_TRANSPORT_MARKER) && c.includes(REN_WIRE_MARKER)
+}
+
+// true = all found modules patched, false = at least one unpatched, null = none found
+function renderersPatched(resourcesDir) {
+  const bundles = rendererBundles(resourcesDir)
+  if (!bundles.length) return null
+  return bundles.every((b) => rendererBundlePatched(b.file))
+}
+
+export function patchRendererBundle(filePath) {
+  if (rendererBundlePatched(filePath)) return { changed: false, applied: 0, missing: [], alreadyPatched: true }
+  const content = fs.readFileSync(filePath, 'utf8')
+  let out = content
+  const steps = [
+    [REN_START_ANCHOR, REN_START_CODE, 'startTurn reset'],
+    [REN_WIRE_ANCHOR, REN_WIRE_CODE, 'loop onReasoning'],
+    [REN_TRANSPORT_ANCHOR, REN_TRANSPORT_CODE, 'transport done'],
+    [REN_PUSH_TOOL_ANCHOR, REN_PUSH_TOOL_CODE, null],
+    [REN_PUSH_TOOL2_ANCHOR, REN_PUSH_TOOL2_CODE, null], // shorthand fallback
+    [REN_PUSH_TOOL3_ANCHOR, REN_PUSH_TOOL3_CODE, null], // sheets (name2) form
+    [REN_PUSH_TERMINAL_ANCHOR, REN_PUSH_TERMINAL_CODE, 'history push (terminal)'],
+    [REN_PUSH_VALIDATE_ANCHOR, REN_PUSH_VALIDATE_CODE, null], // newer builds only
+  ]
+  let applied = 0
+  const missing = []
+  for (const [anchor, code, label] of steps) {
+    if (out.includes(anchor) && !out.includes(code)) {
+      out = out.split(anchor).join(code)
+      applied++
+    } else if (label && !out.includes(anchor)) {
+      missing.push(label)
+    }
+  }
+  const toolCovered =
+    out.includes(REN_PUSH_TOOL_CODE) || out.includes(REN_PUSH_TOOL2_CODE) || out.includes(REN_PUSH_TOOL3_CODE)
+  if (!toolCovered) missing.push('history push (tool turn)')
+  if (!out.includes(REN_PUSH_TERMINAL_CODE)) missing.push('history push (terminal)')
+  if (missing.length) {
+    warn(`Renderer ${path.basename(filePath)}: anchor not found (${missing.join(', ')}); reasoning capture may be incomplete.`)
+  }
+  if (out !== content) {
+    // The renderer bundles are ESM (top-level exports/await), so validate with
+    // `node --check` against a temp .mjs rather than `new Function`.
+    const tmp = path.join(os.tmpdir(), `go-renderer-check-${process.pid}.mjs`)
+    try {
+      fs.writeFileSync(tmp, out)
+      try {
+        execFileSync(process.execPath, ['--check', tmp], { stdio: 'pipe' })
+      } catch (err) {
+        fail(`Patched renderer ${path.basename(filePath)} failed syntax check: ${err.stderr?.toString() || err.message}`)
+      }
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+    fs.writeFileSync(filePath, out)
+  }
+  return { changed: out !== content, applied, missing }
+}
+
+function backupRenderers(backupDir, resourcesDir, ts) {
+  const saved = []
+  for (const b of rendererBundles(resourcesDir)) {
+    const dest = path.join(backupDir, `${b.name}.bak-${ts}`)
+    if (!fs.existsSync(dest)) {
+      fs.copyFileSync(b.file, dest)
+      saved.push({ app: b.app, file: b.name, backup: `${b.name}.bak-${ts}` })
+    }
+  }
+  return saved
+}
+
+function patchAllRenderers(resourcesDir) {
+  const bundles = rendererBundles(resourcesDir)
+  const results = []
+  for (const b of bundles) {
+    if (rendererBundlePatched(b.file)) {
+      results.push({ app: b.app, name: b.name, changed: false })
+    } else {
+      const r = patchRendererBundle(b.file)
+      results.push({ app: b.app, name: b.name, changed: r.changed, applied: r.applied })
+    }
+  }
+  return results
+}
+
 // ---------------------------------------------------------------------------
 // Backup / manifest
 // ---------------------------------------------------------------------------
@@ -670,7 +863,32 @@ async function cmdPatch(opts) {
   const backupDir = backupDirFor(resourcesDir, opts.backupDir)
 
   if (!opts.apiKey) {
-    fail('--api-key <key> is required for patch (your OpenCode API key — Zen or Go).')
+    // Reuse the key already stored in ai-settings.json so a plain
+    // `node patch-genoffice.mjs patch` re-patches after an app update.
+    let existing = null
+    try {
+      existing = JSON.parse(fs.readFileSync(path.join(userDataDir, AI_SETTINGS_FILE), 'utf8'))
+    } catch {}
+    if (existing?.providers?.custom?.apiKey) {
+      opts.apiKey = existing.providers.custom.apiKey
+      log('Reusing the API key already stored in ai-settings.json.')
+    } else {
+      fail('--api-key <key> is required for patch (your OpenCode API key — Zen or Go).')
+    }
+  }
+
+  // Preserve the model/baseUrl already configured when not passed explicitly,
+  // so a plain re-patch does not reset them to the provider defaults.
+  if (!opts.modelExplicit || !opts.baseUrlExplicit) {
+    let existing = null
+    try {
+      existing = JSON.parse(fs.readFileSync(path.join(userDataDir, AI_SETTINGS_FILE), 'utf8'))
+    } catch {}
+    const c = existing?.providers?.custom
+    if (c) {
+      if (!opts.modelExplicit && c.model) opts.model = c.model
+      if (!opts.baseUrlExplicit && c.baseUrl) opts.baseUrl = c.baseUrl
+    }
   }
 
   log('GenOffice patch plan')
@@ -686,6 +904,8 @@ async function cmdPatch(opts) {
   const uaInjected = isUaInjected(asarPath)
   const webReqInjected = isWebReqInjected(asarPath)
   const reasoningInjected = isReasoningInjected(asarPath)
+  const rendererState = renderersPatched(resourcesDir)
+  log(`  renderers   : ${rendererState === true ? 'reasoning capture patched' : rendererState === false ? 'UNPATCHED (app updated? re-run to restore)' : 'not found'}`)
   // Fully patched = force-reset removed AND both User-Agent mechanisms present
   // (header hook for Node fetch + webRequest rewrite for Chromium net.fetch)
   // AND the reasoning_content echo in openAiMessages. Then skip all asar work
@@ -720,10 +940,12 @@ async function cmdPatch(opts) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'genoffice-patch-'))
   const newAsar = path.join(resourcesDir, 'app.asar.new')
   let b = null
+  let rendererBaks = []
 
   try {
     // 1. Auto backup — only when the force-reset patch has NOT been applied,
-    //    so the original backup remains the restore point.
+    //    so the original backup remains the restore point. Renderer bundles are
+    //    backed up whenever they are currently unpatched (before we patch them).
     if (forcePatched === true) {
       log('app.asar already patched — keeping the existing backup as the restore point.')
     } else if (!opts.dryRun) {
@@ -732,6 +954,15 @@ async function cmdPatch(opts) {
       if (b.aiSettingsBackup) log(`Backed up ${AI_SETTINGS_FILE} -> ${b.aiSettingsBackup}`)
     } else {
       log(`[dry-run] would back up app.asar to ${backupDir}/app.asar.bak-${ts}`)
+    }
+
+    if (rendererState === false) {
+      if (!opts.dryRun) {
+        rendererBaks = backupRenderers(backupDir, resourcesDir, ts)
+        if (rendererBaks.length) log(`Backed up ${rendererBaks.length} renderer bundle(s) to ${backupDir}`)
+      } else {
+        log(`[dry-run] would back up ${rendererBundles(resourcesDir).length} renderer bundle(s) to ${backupDir}`)
+      }
     }
 
     if (!skipAsar) {
@@ -779,7 +1010,22 @@ async function cmdPatch(opts) {
       log('Skipping asar extract/patch/repack (nothing to change).')
     }
 
-    // 5. Write ai-settings.json (always — this is how model/base-url/api-key update)
+    // 5. Patch renderer bundles (reasoning capture) so the AI-panel history
+    //    includes reasoning_content. Independent of the asar workflow.
+    if (rendererState === false) {
+      if (!opts.dryRun) {
+        const results = patchAllRenderers(resourcesDir)
+        const changed = results.filter((r) => r.changed)
+        changed.forEach((r) => log(`Patched ${r.app}/renderer ${r.name}`))
+        if (!changed.length) warn('Renderer bundles looked unpatched but nothing changed — anchors may have drifted.')
+      } else {
+        log(`[dry-run] would patch ${rendererBundles(resourcesDir).length} renderer bundle(s) (reasoning capture).`)
+      }
+    } else {
+      log('Renderer bundles already patched (reasoning capture).')
+    }
+
+    // 6. Write ai-settings.json (always — this is how model/base-url/api-key update)
     if (!opts.dryRun) {
       const settingsPath = writeAiSettings(userDataDir, {
         apiKey: opts.apiKey,
@@ -792,20 +1038,22 @@ async function cmdPatch(opts) {
       log(`[dry-run] would write ${path.join(userDataDir, AI_SETTINGS_FILE)}`)
     }
 
-    // 6. Manifest
+    // 7. Manifest
     if (!opts.dryRun) {
       const manifest = readManifest(backupDir)
-      manifest.patches.push({
+      const entry = {
         timestamp: ts,
         asarBackup: b ? `app.asar.bak-${ts}` : null,
         asarSha256: b ? sha256(b.asarBackup) : null,
         aiSettingsBackup: b && b.aiSettingsBackup ? `ai-settings.json.bak-${ts}` : null,
         aiSettingsExisted: b ? b.aiSettingsExisted : false,
+        rendererBackups: rendererBaks.length ? rendererBaks.map((r) => ({ app: r.app, file: r.file, backup: r.backup })) : undefined,
         provider: opts.provider,
         baseUrl: opts.baseUrl,
         model: opts.model,
         userAgent: opts.userAgent ?? DEFAULT_UA,
-      })
+      }
+      manifest.patches.push(entry)
       writeManifest(backupDir, manifest)
     }
 
@@ -872,6 +1120,26 @@ async function cmdRestore(opts) {
     log(`Removed patched ${aiPath} (no pre-patch backup existed)`)
   }
 
+  // Restore renderer bundles (original pre-patch copies, newest per name).
+  if (fs.existsSync(backupDir)) {
+    const baks = fs.readdirSync(backupDir).filter((f) => /^index-.+\.js\.bak-\d{8}-\d{6}$/.test(f)).sort()
+    const byName = new Map()
+    for (const f of baks) {
+      const orig = f.replace(/\.bak-\d{8}-\d{6}$/, '')
+      byName.set(orig, path.join(backupDir, f))
+    }
+    let restored = 0
+    for (const b of rendererBundles(resourcesDir)) {
+      const src = byName.get(b.name)
+      if (src) {
+        fs.copyFileSync(src, b.file)
+        log(`Restored renderer ${b.app}/${b.name} from ${src}`)
+        restored++
+      }
+    }
+    if (restored) log(`Removed reasoning capture from ${restored} renderer bundle(s).`)
+  }
+
   log('Done. GenOffice is back to its original state.')
 }
 
@@ -893,6 +1161,7 @@ function cmdStatus(opts) {
     const uaInjected = isUaInjected(asarPath)
     const webReqInjected = isWebReqInjected(asarPath)
     const reasoningInjected = isReasoningInjected(asarPath)
+    const rendererState = renderersPatched(resourcesDir)
 
     log(`GenOffice install : ${resourcesDir}`)
     log(`app.asar          : ${asarPath} (${fs.statSync(asarPath).size} bytes)`)
@@ -900,6 +1169,7 @@ function cmdStatus(opts) {
     log(`user-agent hook   : ${uaInjected ? 'present' : 'absent'}`)
     log(`ua webRequest     : ${webReqInjected ? 'present' : 'absent'}`)
     log(`reasoning pipeline : ${reasoningInjected ? 'present' : 'absent'}`)
+    log(`renderer capture  : ${rendererState === true ? 'PATCHED' : rendererState === false ? 'UNPATCHED (run patch again)' : 'not found'}`)
     log(`user data         : ${userDataDir}`)
     log(`ai-settings.json  : ${fs.existsSync(path.join(userDataDir, AI_SETTINGS_FILE)) ? 'present' : 'absent'}`)
     log(`backup dir        : ${backupDir}`)
@@ -936,6 +1206,12 @@ Options:
   --yes, -y           Skip confirmation prompts
   --help, -h          Show this help
 
+Notes:
+  patch also patches the AI-panel renderer bundles under resources/modules
+  (reasoning capture), which GenOffice updates wipe every release. Re-run
+  'node patch-genoffice.mjs patch' after an app update. Omit --api-key to reuse
+  the key already stored in ai-settings.json.
+
 Examples:
   node patch-genoffice.mjs patch --api-key sk-xxxx
   node patch-genoffice.mjs patch --api-key sk-xxxx --provider go
@@ -958,6 +1234,8 @@ function parseArgs(argv) {
     dryRun: false,
     yes: false,
     help: false,
+    modelExplicit: false,
+    baseUrlExplicit: false,
   }
   const args = argv.slice(2)
   for (let i = 0; i < args.length; i++) {
@@ -972,8 +1250,10 @@ function parseArgs(argv) {
       opts.apiKey = args[++i]
     } else if (a === '--model') {
       opts.model = args[++i]
+      opts.modelExplicit = true
     } else if (a === '--base-url') {
       opts.baseUrl = args[++i]
+      opts.baseUrlExplicit = true
     } else if (a === '--ua') {
       opts.userAgent = args[++i]
     } else if (a === '--install-dir') {

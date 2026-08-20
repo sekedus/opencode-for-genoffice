@@ -3,7 +3,7 @@
 <picture>![Badge Repo Size]</picture>
 [![Badge License]](./LICENSE)
 [![Badge OpenCode]](https://opencode.ai)
-[![Badge GenOffice]](https://github.com/genspark-ai/genoffice/releases/tag/v0.6.389)
+[![Badge GenOffice]](https://github.com/genspark-ai/genoffice/releases/tag/v0.7.512)
 
 Cross-platform tool that points an installed **GenOffice** at OpenCode **Zen** or **Go** models via an [OpenAI chat-completions](https://developers.openai.com/api/reference/chat-completions/overview) compatible endpoint, using your own API key.
 
@@ -16,7 +16,9 @@ dependencies (the asar reader/writer is built in).
 
 GenOffice has no `OPENAI_BASE_URL`-style env var. Its built-in `custom` provider already
 appends `/chat/completions` to any `baseUrl` and sends `Authorization: Bearer <key>`, but
-the `ai:get-settings` IPC handler force-resets the provider to `genspark`. This tool:
+the `ai:get-settings` IPC handler force-resets the provider to `genspark`.
+
+This tool:
 
 1. **Backs up** `app.asar` (and `ai-settings.json` if present) into
    `<install>/resources/backups/` with a timestamp.
@@ -29,7 +31,7 @@ the `ai:get-settings` IPC handler force-resets the provider to `genspark`. This 
    `custom` provider with your key, model, and base URL.
 4. `restore` puts everything back from the backup.
 
-Verified on the real v0.6.389 bundle: the patched `out/main/index.js` is byte-identical
+Verified on the real v0.7.x bundle: the patched `out/main/index.js` is byte-identical
 to the original except the removed force-reset lines, and the repacked asar is readable
 by standard asar tooling. The app's Electron fuses have asar-integrity validation
 **disabled**, so the patched asar loads normally.
@@ -38,6 +40,10 @@ by standard asar tooling. The app's Electron fuses have asar-integrity validatio
 
 ## Installation
 
+> [!IMPORTANT]  
+> **GenOffice must already be installed** — this tool patches the installed app, it does
+not install GenOffice itself.
+
 Requires **Node.js >= 18** — no other dependencies (the asar reader/writer is built in).
 
 ```bash
@@ -45,16 +51,19 @@ Requires **Node.js >= 18** — no other dependencies (the asar reader/writer is 
 git clone --depth 1 https://github.com/sekedus/opencode-for-genoffice.git
 cd opencode-for-genoffice
 
-# Install globally (adds the `ocfgo` command)
-npm install -g .
-
-# Or run directly from the repo without installing
+# Option 1: run directly from the repo (no install needed)
 node patch-genoffice.mjs <command> [options]
+
+# Option 2 (optional): install globally, adds the `ocfgo` command
+npm install -g .
 ```
 
 ## Usage
 
 ```
+node patch-genoffice.mjs <command> [options]
+
+# or, if installed globally (Option 2):
 ocfgo <command> [options]
 ```
 
@@ -86,29 +95,33 @@ ocfgo <command> [options]
 
 ```bash
 # Patch with defaults (big-pickle, Zen)
-ocfgo patch --api-key sk-xxxx
+node patch-genoffice.mjs patch --api-key sk-xxxx
 
 # Patch against OpenCode Go (subscription)
-ocfgo patch --api-key sk-xxxx --provider go
+node patch-genoffice.mjs patch --api-key sk-xxxx --provider go
 
 # Patch with a free model
-ocfgo patch --api-key sk-xxxx --model deepseek-v4-flash-free
+node patch-genoffice.mjs patch --api-key sk-xxxx --model deepseek-v4-flash-free
 
 # Patch with a custom User-Agent header
-ocfgo patch --api-key sk-xxxx --ua "opencode-for-genoffice/1.0.0"
+node patch-genoffice.mjs patch --api-key sk-xxxx --ua "opencode-for-genoffice/1.0.0"
 
 # Go provider with a specific model
-ocfgo patch --api-key sk-xxxx --provider go --model glm-5.1
+node patch-genoffice.mjs patch --api-key sk-xxxx --provider go --model glm-5.1
 
 # Dry run first (no changes)
-ocfgo patch --api-key sk-xxxx --dry-run
+node patch-genoffice.mjs patch --api-key sk-xxxx --dry-run
 
 # Check state
-ocfgo status
+node patch-genoffice.mjs status
 
 # Undo
-ocfgo restore
+node patch-genoffice.mjs restore
 ```
+
+> [!NOTE]  
+> If you installed globally (Option 2), the same commands work with `ocfgo` instead of
+`node patch-genoffice.mjs`.
 
 <br/>
 
@@ -160,7 +173,7 @@ Fetch the full list: `https://opencode.ai/zen/go/v1/models`
 ## How the patch works (technical)
 
 - The code change in `out/main/index.js` inside `resources/app.asar` is:
-  1. Remove `settings.provider = "genspark";` (2 occurrences in v0.6.389: the active
+  1. Remove `settings.provider = "genspark";` (2 occurrences in v0.7.512: the active
      `ai:get-settings` handler and a dormant sheets variant).
   2. Inject a config-driven User-Agent hook into the `custom` provider's fetch headers
      in **both** request paths (the non-streaming chat call and the streaming turn the
@@ -211,7 +224,6 @@ and macOS (see the install locations table above for the per-OS paths).
 |-----------|---------|-----|
 | Installed app | **Yes** | This is what runs. Update it (auto-update or new installer), then re-patch. |
 | User-data dir | **No** | Preserved automatically by the update. `ai-settings.json` survives. |
-| Source code | **No** | Only used for analysis. Clone/extract it anywhere if you need to inspect a new version's bundle. |
 
 ### Steps
 
@@ -266,5 +278,5 @@ This project is licensed under the GPL-3.0 License - see the [LICENSE](./LICENSE
 [Badge Repo Size]: https://img.shields.io/github/repo-size/sekedus/opencode-for-genoffice?label=Size
 [Badge License]: https://img.shields.io/github/license/sekedus/opencode-for-genoffice?label=License
 [Badge OpenCode]: https://img.shields.io/badge/OpenCode-000000.svg?logo=opencode
-[Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.6.389-0D7EFE.svg?labelColor=000000&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNDggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9IndoaXRlIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9IndoaXRlIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJibGFjayIvPgo8L2c+Cjwvc3ZnPg==
-<!-- [Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.6.389-0D7EFE.svg?labelColor=ffffff&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMzggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9ImJsYWNrIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9ImJsYWNrIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJ3aGl0ZSIvPgo8L2c+Cjwvc3ZnPg== -->
+[Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.7.512-0D7EFE.svg?labelColor=000000&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNDggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9IndoaXRlIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9IndoaXRlIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJibGFjayIvPgo8L2c+Cjwvc3ZnPg==
+<!-- [Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.7.512-0D7EFE.svg?labelColor=ffffff&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMzggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9ImJsYWNrIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9ImJsYWNrIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJ3aGl0ZSIvPgo8L2c+Cjwvc3ZnPg== -->

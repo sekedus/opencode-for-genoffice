@@ -1,6 +1,6 @@
 {
   "name": "opencode-for-genoffice",
-  "version": "1.0.0",
+  "version": "1.0.6",
   "description": "Point an installed GenOffice at OpenCode Zen/Go models via an OpenAI chat-completions compatible endpoint",
   "license": "GPL-3.0",
   "type": "module",
