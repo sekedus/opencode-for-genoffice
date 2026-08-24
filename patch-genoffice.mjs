@@ -670,6 +670,7 @@ export function patchRendererBundle(filePath) {
 }
 
 function backupRenderers(backupDir, resourcesDir, ts) {
+  fs.mkdirSync(backupDir, { recursive: true })
   const saved = []
   for (const b of rendererBundles(resourcesDir)) {
     const dest = path.join(backupDir, `${b.name}.bak-${ts}`)
