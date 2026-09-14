@@ -3,7 +3,7 @@
 <picture>![Badge Repo Size]</picture>
 [![Badge License]](./LICENSE)
 [![Badge OpenCode]](https://opencode.ai)
-[![Badge GenOffice]](https://github.com/genspark-ai/genoffice/releases/tag/v0.7.512)
+[![Badge GenOffice]](https://github.com/genspark-ai/genoffice/releases/tag/v0.10.63)
 
 Cross-platform tool that points an installed **GenOffice** at OpenCode **Zen** or **Go** models via an [OpenAI chat-completions](https://developers.openai.com/api/reference/chat-completions/overview) compatible endpoint, using your own API key.
 
@@ -121,7 +121,7 @@ node patch-genoffice.mjs patch --api-key sk-xxxx
 node patch-genoffice.mjs patch --api-key sk-xxxx --provider go
 
 # Patch with a free model
-node patch-genoffice.mjs patch --api-key sk-xxxx --model deepseek-v4-flash-free
+node patch-genoffice.mjs patch --api-key sk-xxxx --model mimo-v2.5-free
 
 # Patch with a custom User-Agent header
 node patch-genoffice.mjs patch --api-key sk-xxxx --ua "opencode-for-genoffice/1.0.0"
@@ -130,10 +130,10 @@ node patch-genoffice.mjs patch --api-key sk-xxxx --ua "opencode-for-genoffice/1.
 node patch-genoffice.mjs patch --api-key sk-xxxx --provider go --model glm-5.1
 
 # BYOK generation (0.7.793+): custom headers only, keys stay in the app UI
-node patch-genoffice.mjs patch --ua "opencode-for-genoffice/1.1.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
+node patch-genoffice.mjs patch --ua "opencode-for-genoffice/1.0.0" --header "x-opencode-session: ses_abc123"
 
 # BYOK with multiple custom headers (--header is repeatable)
-node patch-genoffice.mjs patch --header "user-agent: opencode-for-genoffice/1.1.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
+node patch-genoffice.mjs patch --header "user-agent: opencode-for-genoffice/1.0.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
 
 # Check state
 node patch-genoffice.mjs status
@@ -171,8 +171,8 @@ part of the same platform (Zen is pay-per-use, Go is a fixed subscription).
 
 Pay-per-use; includes free models. Chat-completions ids:
 
-- Free: `big-pickle`, `deepseek-v4-flash-free`, `mimo-v2.5-free`, `hy3-free`,
-  `laguna-s-2.1-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`
+- Free: `big-pickle`, `mimo-v2.5-free`, `ling-3.0-flash-fin-free`,
+  `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `muse-spark-1.3-contributor-free`
 - Paid: `deepseek-v4-pro`, `deepseek-v4-flash`, `minimax-m3`, `minimax-m2.7`,
   `minimax-m2.5`, `glm-5.2`, `glm-5.1`, `glm-5`, `kimi-k2.5`, `kimi-k2.6`,
   `kimi-k2.7-code`, `kimi-k3`
@@ -198,7 +198,7 @@ Fetch the full list: `https://opencode.ai/zen/go/v1/models`
 ### Legacy generation (0.7.686 and lower)
 
 - The code change in `out/main/index.js` inside `resources/app.asar` is:
-  1. Remove `settings.provider = "genspark";` (2 occurrences in v0.7.512: the active
+  1. Remove `settings.provider = "genspark";` (2 occurrences in v0.10.63: the active
      `ai:get-settings` handler and a dormant sheets variant).
   2. Inject a config-driven User-Agent hook into the `custom` provider's fetch headers
      in **both** request paths (the non-streaming chat call and the streaming turn the
@@ -324,5 +324,5 @@ This project is licensed under the GPL-3.0 License - see the [LICENSE](./LICENSE
 [Badge Repo Size]: https://img.shields.io/github/repo-size/sekedus/opencode-for-genoffice?label=Size
 [Badge License]: https://img.shields.io/github/license/sekedus/opencode-for-genoffice?label=License
 [Badge OpenCode]: https://img.shields.io/badge/OpenCode-000000.svg?logo=opencode
-[Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.7.512-0D7EFE.svg?labelColor=000000&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNDggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9IndoaXRlIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9IndoaXRlIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJibGFjayIvPgo8L2c+Cjwvc3ZnPg==
-<!-- [Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.7.512-0D7EFE.svg?labelColor=ffffff&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMzggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9ImJsYWNrIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9ImJsYWNrIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJ3aGl0ZSIvPgo8L2c+Cjwvc3ZnPg== -->
+[Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.10.63-0D7EFE.svg?labelColor=000000&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNDggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9IndoaXRlIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9IndoaXRlIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJibGFjayIvPgo8L2c+Cjwvc3ZnPg==
+<!-- [Badge GenOffice]: https://img.shields.io/badge/GenOffice-v0.10.63-0D7EFE.svg?labelColor=ffffff&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMzggMTQ4Ij4KPGc+CjxyZWN0IHdpZHRoPSI5MCIgaGVpZ2h0PSIxMDgiIGZpbGw9ImJsYWNrIiByeD0iMTYiLz4KPHJlY3QgeD0iNDgiIHk9IjQwIiB3aWR0aD0iOTAiIGhlaWdodD0iMTA4IiByeD0iMTYiIGZpbGw9ImJsYWNrIi8+CjxwYXRoIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZD0iTTQ4IDU2QzQ4IDQ3LjE2MzQgNTUuMTYzIDQwIDY0IDQwSDkwVjkyQzkwIDEwMC44MzcgODIuODM3IDEwOCA3NCAxMDhINDhWNTZaIiBmaWxsPSJ3aGl0ZSIvPgo8L2c+Cjwvc3ZnPg== -->

@@ -34,7 +34,7 @@
  *   --ua <ua>           User-Agent header sent to the AI endpoint (default: opencode-for-genoffice/<pkg version>)
  *   --header <N:V>      Extra request header for the custom endpoint (repeatable;
  *                       byok only; merged into providers.custom.headers and
- *                       media.providers.custom.headers, e.g. --header "x-opencode-session: abc")
+ *                       media.providers.custom.headers, e.g. --header "x-opencode-session: ses_abc123")
  *   --install-dir <d>   GenOffice install dir (auto-detected if omitted)
  *   --user-data <d>     GenOffice user-data dir (auto-detected if omitted)
  *   --backup-dir <d>    Backup dir (default: <install>/resources/backups)
@@ -45,8 +45,9 @@
  * Examples:
  *   node patch-genoffice.mjs patch --api-key sk-xxxx
  *   node patch-genoffice.mjs patch --api-key sk-xxxx --provider go
- *   node patch-genoffice.mjs patch --api-key sk-xxxx --model deepseek-v4-flash-free
- *   node patch-genoffice.mjs patch --ua "opencode-for-genoffice/1.0.0" --header "x-opencode-session: abc"
+ *   node patch-genoffice.mjs patch --api-key sk-xxxx --model mimo-v2.5-free
+ *   node patch-genoffice.mjs patch --ua "opencode-for-genoffice/1.0.0" --header "x-opencode-session: ses_abc123"
+ *   node patch-genoffice.mjs patch --header "user-agent: opencode-for-genoffice/1.0.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
  *   node patch-genoffice.mjs restore
  *   node patch-genoffice.mjs status
  */
