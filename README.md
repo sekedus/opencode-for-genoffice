@@ -14,22 +14,38 @@ dependencies (the asar reader/writer is built in).
 
 ## What it does
 
-GenOffice has no `OPENAI_BASE_URL`-style env var. Its built-in `custom` provider already
-appends `/chat/completions` to any `baseUrl` and sends `Authorization: Bearer <key>`, but
-the `ai:get-settings` IPC handler force-resets the provider to `genspark`.
+The tool auto-detects the installed GenOffice generation and picks the right flow:
 
-This tool:
+- **Legacy (0.7.686 and lower).** GenOffice has no `OPENAI_BASE_URL`-style env var.
+  Its built-in `custom` provider already appends `/chat/completions` to any `baseUrl`
+  and sends `Authorization: Bearer <key>`, but the `ai:get-settings` IPC handler
+  force-resets the provider to `genspark`.
 
-1. **Backs up** `app.asar` (and `ai-settings.json` if present) into
-   `<install>/resources/backups/` with a timestamp.
-2. Extracts `app.asar`, removes the `settings.provider = "genspark";` line(s) from
-   `out/main/index.js`, injects a config-driven User-Agent hook into the `custom`
-   provider's request headers, injects a `reasoning_content` passthrough in
-   `openAiMessages` (required by thinking-mode models), repacks, and replaces the
-   installed asar.
-3. Writes/merges `ai-settings.json` in the GenOffice user-data dir selecting the
-   `custom` provider with your key, model, and base URL.
-4. `restore` puts everything back from the backup.
+  This tool:
+
+  1. **Backs up** `app.asar` (and `ai-settings.json` if present) into
+     `<install>/resources/backups/` with a timestamp.
+  2. Extracts `app.asar`, removes the `settings.provider = "genspark";` line(s) from
+     `out/main/index.js`, injects a config-driven User-Agent hook into the `custom`
+     provider's request headers, injects a `reasoning_content` passthrough in
+     `openAiMessages` (required by thinking-mode models), repacks, and replaces the
+     installed asar.
+  3. Writes/merges `ai-settings.json` in the GenOffice user-data dir selecting the
+     `custom` provider with your key, model, and base URL.
+  4. `restore` puts everything back from the backup.
+
+- **BYOK (0.7.793 and above).** GenOffice has native bring-your-own-key support, so
+  the force-reset removal is no longer needed — configure key/model/base URL in the
+  app UI. The tool only patches **custom headers**:
+
+  1. **Backs up** `app.asar` (once; re-patches keep the original backup).
+  2. Injects a `...(config.headers || {})` spread into the OpenAI-compatible chat
+     paths (streaming turn + non-streaming call) and into the shared media `bearer()`
+     helper (image generation + media analysis), plus a `webRequest` rewrite so the
+     headers also reach the endpoint over Chromium's `net.fetch` rescue path.
+  3. Merges `headers` into `providers.custom.headers` and `media.providers.custom.headers`
+     in `ai-settings.json`, leaving key/model/base URL untouched. `--ua` maps to the
+     `User-Agent` entry; `--header "Name: value"` (repeatable) adds verbatim entries.
 
 Verified on the real v0.7.x bundle: the patched `out/main/index.js` is byte-identical
 to the original except the removed force-reset lines, and the repacked asar is readable
@@ -79,11 +95,12 @@ ocfgo <command> [options]
 
 | Option | Description |
 |--------|-------------|
-| `--provider <zen\|go>` | Endpoint provider (default: `zen`). `zen` = pay-per-use, `go` = subscription. |
-| `--api-key <key>` | OpenCode API key, Zen or Go (required for `patch`) |
-| `--model <model>` | Model id (default: `big-pickle` for zen, `deepseek-v4-pro` for go) |
-| `--base-url <url>` | Base URL, no trailing slash (default: `https://opencode.ai/zen/v1` for zen, `https://opencode.ai/zen/go/v1` for go) |
-| `--ua <ua>` | User-Agent header sent to the AI endpoint (default: `opencode-for-genoffice/<version>` from package.json) |
+| `--provider <zen\|go>` | Endpoint provider, legacy generation only (default: `zen`). `zen` = pay-per-use, `go` = subscription. |
+| `--api-key <key>` | OpenCode API key, Zen or Go (required for `patch` on legacy; ignored on BYOK) |
+| `--model <model>` | Model id, legacy only (default: `big-pickle` for zen, `deepseek-v4-pro` for go) |
+| `--base-url <url>` | Base URL, no trailing slash, legacy only (default: `https://opencode.ai/zen/v1` for zen, `https://opencode.ai/zen/go/v1` for go) |
+| `--ua <ua>` | User-Agent header sent to the AI endpoint (default: `opencode-for-genoffice/<version>` from package.json; pass `""` on BYOK to remove) |
+| `--header <Name:value>` | Extra request header for the custom endpoint, BYOK only (repeatable; merged into `providers.custom.headers` and `media.providers.custom.headers`) |
 | `--install-dir <dir>` | GenOffice install dir (auto-detected if omitted) |
 | `--user-data <dir>` | GenOffice user-data dir (auto-detected if omitted) |
 | `--backup-dir <dir>` | Backup dir (default: `<install>/resources/backups`) |
@@ -94,6 +111,9 @@ ocfgo <command> [options]
 ### Examples
 
 ```bash
+# Dry run first (no changes)
+node patch-genoffice.mjs patch --api-key sk-xxxx --dry-run
+
 # Patch with defaults (big-pickle, Zen)
 node patch-genoffice.mjs patch --api-key sk-xxxx
 
@@ -109,8 +129,11 @@ node patch-genoffice.mjs patch --api-key sk-xxxx --ua "opencode-for-genoffice/1.
 # Go provider with a specific model
 node patch-genoffice.mjs patch --api-key sk-xxxx --provider go --model glm-5.1
 
-# Dry run first (no changes)
-node patch-genoffice.mjs patch --api-key sk-xxxx --dry-run
+# BYOK generation (0.7.793+): custom headers only, keys stay in the app UI
+node patch-genoffice.mjs patch --ua "opencode-for-genoffice/1.1.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
+
+# BYOK with multiple custom headers (--header is repeatable)
+node patch-genoffice.mjs patch --header "user-agent: opencode-for-genoffice/1.1.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
 
 # Check state
 node patch-genoffice.mjs status
@@ -172,6 +195,8 @@ Fetch the full list: `https://opencode.ai/zen/go/v1/models`
 
 ## How the patch works (technical)
 
+### Legacy generation (0.7.686 and lower)
+
 - The code change in `out/main/index.js` inside `resources/app.asar` is:
   1. Remove `settings.provider = "genspark";` (2 occurrences in v0.7.512: the active
      `ai:get-settings` handler and a dormant sheets variant).
@@ -207,6 +232,27 @@ Fetch the full list: `https://opencode.ai/zen/go/v1/models`
   backup stays the restore point) and only rewrites `ai-settings.json`. If the asar is
   patched but missing the User-Agent or reasoning-echo support (e.g. patched by an
   older version), it is re-patched to add it without creating a new backup.
+
+### BYOK generation (0.7.793 and above)
+
+- Generation detection: the tool reads `out/main/index.js` from `app.asar` — the
+  force-reset string means legacy, `settings.provider = activeProvider(settings);`
+  means BYOK — falling back to the app version (`package.json` in the asar, else
+  `app-update.yml`) compared against `0.7.793` when the bundle layout is unreadable.
+- The code change in `out/main/index.js` is headers-only:
+  1. Append `...(config2.headers || {})` to the fetch headers of the streaming turn
+     (`openAiCompatibleTurn`) and the non-streaming call (`chatOpenAiCompatible`).
+  2. Rewrite the shared media `bearer(config2)` helper to spread the same map, which
+     covers image generation (`/images/generations`, `/images/edits`) and media
+     analysis (`/chat/completions`) in one injection.
+  3. Register a `webRequest.onBeforeSendHeaders` handler that merges the stored
+     headers into `/chat/completions`, `/images/generations`, and `/images/edits`
+     requests, so custom headers also reach the endpoint over the Chromium rescue path.
+- `ai-settings.json` is merged headers-only: `headers` is merged into
+  `providers.custom.headers` and `media.providers.custom.headers`; key, model, and
+  base URL are left exactly as configured in the app UI. `--ua <v>` sets the
+  `User-Agent` entry (`--ua ""` removes it); `--header "Name: value"` adds verbatim
+  entries. A first run with no flags seeds `User-Agent: opencode-for-genoffice/<version>`.
 
 <br/>
 

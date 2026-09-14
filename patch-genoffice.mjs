@@ -6,6 +6,18 @@
  * Providers: OpenCode Zen  https://opencode.ai/zen/v1/chat/completions
  *            OpenCode Go   https://opencode.ai/zen/go/v1/chat/completions
  *
+ * Two generations are supported (auto-detected per install):
+ *   legacy (0.7.686 and lower) — the ai:get-settings IPC handler force-resets
+ *     `settings.provider = "genspark"`, so the asar must be patched to remove
+ *     it. Full flow: backup, remove force-reset, inject User-Agent hook +
+ *     reasoning pipeline, write ai-settings.json with key/model/baseUrl.
+ *   byok (0.7.793 and above) — GenOffice has native bring-your-own-key
+ *     support, so no force-reset removal is needed. Headers-only flow: inject
+ *     a `config.headers` spread into the OpenAI-compatible chat + media
+ *     request paths and merge `headers` into `providers.custom` and
+ *     `media.providers.custom` in ai-settings.json. Keys/models stay as the
+ *     user configured them in the app UI.
+ *
  * Cross-platform: Windows (Git Bash / cmd / PowerShell), Linux, macOS.
  * Requires: Node.js >= 18. No other dependencies (self-contained asar reader/writer).
  *
@@ -15,11 +27,14 @@
  *   status   Show install location, patch state, and available backups.
  *
  * Options:
- *   --provider <p>      Endpoint provider: zen | go (default: zen)
- *   --api-key <key>     OpenCode API key, Zen or Go (required for patch)
- *   --model <model>     Model id (default: big-pickle for zen, deepseek-v4-pro for go)
- *   --base-url <url>    Base URL, no trailing slash (default: provider-specific)
+ *   --provider <p>      Endpoint provider: zen | go (default: zen; legacy only)
+ *   --api-key <key>     OpenCode API key, Zen or Go (required for patch on legacy)
+ *   --model <model>     Model id (default: big-pickle for zen, deepseek-v4-pro for go; legacy only)
+ *   --base-url <url>    Base URL, no trailing slash (default: provider-specific; legacy only)
  *   --ua <ua>           User-Agent header sent to the AI endpoint (default: opencode-for-genoffice/<pkg version>)
+ *   --header <N:V>      Extra request header for the custom endpoint (repeatable;
+ *                       byok only; merged into providers.custom.headers and
+ *                       media.providers.custom.headers, e.g. --header "x-opencode-session: abc")
  *   --install-dir <d>   GenOffice install dir (auto-detected if omitted)
  *   --user-data <d>     GenOffice user-data dir (auto-detected if omitted)
  *   --backup-dir <d>    Backup dir (default: <install>/resources/backups)
@@ -31,6 +46,7 @@
  *   node patch-genoffice.mjs patch --api-key sk-xxxx
  *   node patch-genoffice.mjs patch --api-key sk-xxxx --provider go
  *   node patch-genoffice.mjs patch --api-key sk-xxxx --model deepseek-v4-flash-free
+ *   node patch-genoffice.mjs patch --ua "opencode-for-genoffice/1.0.0" --header "x-opencode-session: abc"
  *   node patch-genoffice.mjs restore
  *   node patch-genoffice.mjs status
  */
@@ -96,6 +112,73 @@ const UA_ANCHOR = `async function chatOpenAiCompatible(wd, baseUrl2, config2, sy
       Authorization: \`Bearer \${config2.apiKey}\`,`
 const UA_LINE = `\n      ...(config2.userAgent ? { "User-Agent": config2.userAgent } : {}),`
 const UA_NEEDLE = `...(config2.userAgent ? { "User-Agent": config2.userAgent } : {})`
+
+// ---------------------------------------------------------------------------
+// BYOK generation (0.7.793+): native bring-your-own-key, patch only headers.
+// The custom chat + media request paths spread `config.headers` (a generic
+// string map from ai-settings.json) into fetch headers, so --ua/--header can
+// be changed by re-running `patch` without touching the asar again.
+// Verified against the installed 0.10.63 bundle (out/main/index.js).
+// ---------------------------------------------------------------------------
+
+// Chat streaming turn (the AI panel path) and the non-streaming chat call.
+const HDR_ANCHOR_STREAM = `async function openAiCompatibleTurn(baseUrl2, config2, system, messages2, tools, maxTokens, cb, wd, options) {
+  const onBytes = () => {
+    wd.touch();
+    cb.onActivity?.();
+  };
+  const response = await aiFetch(\`\${baseUrl2.replace(/\\/$/, "")}/chat/completions\`, {
+    method: "POST",
+    signal: wd.signal,
+    headers: {
+      "Content-Type": "application/json",
+      ...config2.apiKey ? { Authorization: \`Bearer \${config2.apiKey}\` } : {},
+      ...gensparkAttributionHeaders(baseUrl2),
+      ...opencodeSessionHeaders(baseUrl2, cb.sessionId)`
+const HDR_ANCHOR_CHAT = `async function chatOpenAiCompatible(wd, baseUrl2, config2, system, user, options = {}) {
+  const response = await aiFetch(\`\${baseUrl2.replace(/\\/$/, "")}/chat/completions\`, {
+    method: "POST",
+    signal: wd.signal,
+    headers: {
+      "Content-Type": "application/json",
+      ...config2.apiKey ? { Authorization: \`Bearer \${config2.apiKey}\` } : {},
+      ...gensparkAttributionHeaders(baseUrl2),
+      ...opencodeSessionHeaders(baseUrl2)`
+const HDR_LINE = `,\n      ...(config2.headers || {})`
+const HDR_MARKER = `...(config2.headers || {})`
+
+// Media paths share one `bearer(config2)` helper (images/generations,
+// images/edits, media chat/completions analysis). Spreading headers there
+// covers all three in one injection.
+const HDR_ANCHOR_BEARER = `function bearer(config2) {
+  return config2.apiKey ? { Authorization: \`Bearer \${config2.apiKey}\` } : {};`
+const HDR_CODE_BEARER = `function bearer(config2) {
+  return { ...(config2.apiKey ? { Authorization: \`Bearer \${config2.apiKey}\` } : {}), ...(config2.headers || {}) };`
+
+// Chromium's net.fetch rescue path silently drops a User-Agent header set in
+// fetch headers. The BYOK webRequest rewrite reads the same `headers` map so
+// custom headers also reach the endpoint over the Chromium stack.
+const HDR_WEBREQ_ANCHOR = `setRescueFetch((url, init) => require$$1$2.net.fetch(url, init));
+  setAiUserAgent(\`GenOffice/\${require$$1$2.app.getVersion()}\`);`
+const HDR_WEBREQ_CODE = `setRescueFetch((url, init) => require$$1$2.net.fetch(url, init));
+  setAiUserAgent(\`GenOffice/\${require$$1$2.app.getVersion()}\`);
+  try {
+    require$$1$2.session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      if (details.url.includes("/chat/completions") || details.url.includes("/images/generations") || details.url.includes("/images/edits")) {
+        try {
+          const __hdr = readJson$1(SETTINGS_PATH(), {}).providers?.custom?.headers || readJson$1(SETTINGS_PATH(), {}).media?.providers?.custom?.headers;
+          if (__hdr && typeof __hdr === "object") Object.assign(details.requestHeaders, __hdr);
+        } catch {}
+      }
+      callback({ requestHeaders: details.requestHeaders });
+    });
+  } catch (__e) {}`
+const HDR_WEBREQ_MARKER = `details.url.includes("/images/generations")`
+
+// Generation detection: legacy builds (<=0.7.686) carry the force-reset
+// `settings.provider = "genspark";` in the ai:get-settings handler; BYOK
+// builds (>=0.7.793) resolve via `activeProvider(settings)` instead.
+const BYOK_MARKER = `settings.provider = activeProvider(settings);`
 
 // The AI panel streams responses, so the same hook must also go into the
 // streaming turn (openAiCompatibleTurn), not just the non-streaming chat call.
@@ -562,6 +645,56 @@ function isGenOfficeRunning() {
 // Patch state
 // ---------------------------------------------------------------------------
 
+// Generation of an installed bundle: 'legacy' (<=0.7.686, force-reset
+// present), 'byok' (>=0.7.793, activeProvider present), or null when the
+// layout cannot be determined. Content probe first (works even when the
+// version string is unreadable); app version as fallback.
+function detectGeneration(asarPath, resourcesDir) {
+  const buf = readFileFromAsar(asarPath, MAIN_JS)
+  if (buf) {
+    const s = buf.toString('utf8')
+    if (s.includes(NEEDLE)) return 'legacy'
+    if (s.includes(BYOK_MARKER)) return 'byok'
+  }
+  const v = installedAppVersion(resourcesDir)
+  if (v) {
+    const cmp = compareVersions(v, '0.7.793')
+    if (cmp < 0) return 'legacy'
+    return 'byok'
+  }
+  return null
+}
+
+// Best-effort app version: package.json inside the asar (shell package),
+// else the version embedded in app-update.yml next to it. Returns null when
+// neither is readable.
+function installedAppVersion(resourcesDir) {
+  try {
+    const asar = path.join(resourcesDir, 'app.asar')
+    const buf = readFileFromAsar(asar, 'package.json')
+    if (buf) {
+      const v = JSON.parse(buf.toString('utf8')).version
+      if (typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v)) return v
+    }
+  } catch {}
+  try {
+    const yml = fs.readFileSync(path.join(resourcesDir, 'app-update.yml'), 'utf8')
+    const m = /^version:\s*(\d+\.\d+\.\d+)/m.exec(yml)
+    if (m) return m[1]
+  } catch {}
+  return null
+}
+
+function compareVersions(a, b) {
+  const pa = a.split('.').map((x) => parseInt(x, 10) || 0)
+  const pb = b.split('.').map((x) => parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d !== 0) return d < 0 ? -1 : 1
+  }
+  return 0
+}
+
 function isPatched(asarPath) {
   const buf = readFileFromAsar(asarPath, MAIN_JS)
   if (!buf) return null // cannot determine (different layout)
@@ -587,6 +720,21 @@ function isReasoningInjected(asarPath) {
     buf.includes(REASONING_MARKER) &&
     buf.includes(MAIN_REASONING_MASTER_MARKER) &&
     buf.includes(MAIN_REASONING_WIRE_MARKER)
+  )
+}
+
+// BYOK generation: all three header injections present (chat streaming turn,
+// non-streaming chat call, shared media bearer) plus the Chromium webRequest
+// rewrite. Missing any one of them means a re-patch without a new backup.
+function isHeadersInjected(asarPath) {
+  const buf = readFileFromAsar(asarPath, MAIN_JS)
+  if (!buf) return false
+  const s = buf.toString('utf8')
+  return (
+    s.includes(HDR_ANCHOR_STREAM + HDR_LINE) &&
+    s.includes(HDR_ANCHOR_CHAT + HDR_LINE) &&
+    s.includes(HDR_CODE_BEARER) &&
+    s.includes(HDR_WEBREQ_MARKER)
   )
 }
 
@@ -813,6 +961,58 @@ function patchMainJs(mainJsPath) {
   return { changed: true, count, uaInjected, webReqInjected, reasoningInjected: reasoningInjected || reasoningPipeline > 0 }
 }
 
+// BYOK generation (0.7.793+): spread `config.headers` into the custom
+// OpenAI-compatible request paths. Chat streaming turn + non-streaming chat
+// call each get `...(config2.headers || {})`; the three media paths
+// (images/generations, images/edits, media chat/completions) share the
+// `bearer(config2)` helper, so one injection covers all of them. Plus a
+// webRequest rewrite so the headers also reach the endpoint over Chromium's
+// net.fetch rescue path. All idempotent and marker-guarded.
+export function patchMainJsHeaders(mainJsPath) {
+  const content = fs.readFileSync(mainJsPath, 'utf8')
+  let out = content
+  let chatInjected = 0
+  for (const anchor of [HDR_ANCHOR_STREAM, HDR_ANCHOR_CHAT]) {
+    if (out.includes(anchor) && !out.includes(anchor + HDR_LINE)) {
+      out = out.split(anchor).join(anchor + HDR_LINE)
+      chatInjected++
+    } else if (!out.includes(anchor)) {
+      warn(`Could not find an OpenAI-compatible headers block in ${MAIN_JS}; custom headers will be limited.`)
+    }
+  }
+
+  let mediaInjected = false
+  if (!out.includes(HDR_CODE_BEARER)) {
+    if (!out.includes(HDR_ANCHOR_BEARER)) {
+      warn(`Could not find the media bearer helper in ${MAIN_JS}; custom headers will not cover image generation / media analysis.`)
+    } else {
+      out = out.split(HDR_ANCHOR_BEARER).join(HDR_CODE_BEARER)
+      mediaInjected = true
+    }
+  }
+
+  let webReqInjected = false
+  if (!out.includes(HDR_WEBREQ_MARKER)) {
+    if (!out.includes(HDR_WEBREQ_ANCHOR)) {
+      warn(`Could not find the AI IPC registration in ${MAIN_JS}; custom headers will not cover the Chromium fetch path.`)
+    } else {
+      out = out.split(HDR_WEBREQ_ANCHOR).join(HDR_WEBREQ_CODE)
+      webReqInjected = true
+    }
+  }
+
+  if (chatInjected === 0 && !mediaInjected && !webReqInjected) {
+    return { changed: false, chatInjected: 0, mediaInjected: false, webReqInjected: false }
+  }
+  try {
+    new Function(out) // eslint-disable-line no-new-func
+  } catch (err) {
+    fail(`Patched ${MAIN_JS} failed syntax check: ${err.message}`)
+  }
+  fs.writeFileSync(mainJsPath, out)
+  return { changed: true, chatInjected, mediaInjected, webReqInjected }
+}
+
 function writeAiSettings(userDataDir, { apiKey, model, baseUrl, userAgent }) {
   const settingsPath = path.join(userDataDir, AI_SETTINGS_FILE)
   let settings = {}
@@ -834,6 +1034,82 @@ function writeAiSettings(userDataDir, { apiKey, model, baseUrl, userAgent }) {
   return settingsPath
 }
 
+// BYOK generation (0.7.793+): headers-only. Merge `headers` into
+// `providers.custom` and `media.providers.custom`, leaving key/model/baseUrl
+// exactly as the user configured them in the app UI. `--ua` maps to the
+// `User-Agent` entry; `--header Name:Value` adds verbatim entries. Passing
+// `--ua ""` (empty string) removes the User-Agent entry again.
+
+// HTTP header names are case-insensitive ("user-agent" and "User-Agent" are
+// the same header), but JSON keys are not — merging without normalizing would
+// store both and send duplicates. First occurrence wins; the canonical
+// "User-Agent" spelling is preferred when present.
+function dedupeHeaders(headers) {
+  const seen = new Set()
+  const out = {}
+  const keys = Object.keys(headers).sort((a, b) => {
+    if (a === 'User-Agent') return -1
+    if (b === 'User-Agent') return 1
+    return 0
+  })
+  for (const k of keys) {
+    const lower = k.toLowerCase()
+    if (seen.has(lower)) continue
+    seen.add(lower)
+    out[k] = headers[k]
+  }
+  return out
+}
+
+function hasAnyHeaders(customConfig) {
+  const h = customConfig?.headers
+  return !!h && typeof h === 'object' && Object.keys(h).length > 0
+}
+
+export function writeAiSettingsHeaders(userDataDir, { userAgent, headers }) {
+  const settingsPath = path.join(userDataDir, AI_SETTINGS_FILE)
+  let settings = {}
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+  } catch {
+    settings = {}
+  }
+  const merged = { ...(headers || {}) }
+  const dropUa = userAgent !== undefined && !userAgent
+  if (userAgent) {
+    // Collapse any case variant the user passed via --header (e.g.
+    // "user-agent") into the canonical "User-Agent" entry: HTTP headers are
+    // case-insensitive, and duplicates would both be sent.
+    for (const k of Object.keys(merged)) {
+      if (k.toLowerCase() === 'user-agent') delete merged[k]
+    }
+    merged['User-Agent'] = userAgent
+  } else if (!dropUa && !hasAnyHeaders(settings.providers?.custom) && !hasAnyHeaders(settings.media?.providers?.custom)) {
+    // First run with no explicit headers: seed a default User-Agent so the
+    // endpoint can attribute traffic without any flags. A lowercase
+    // "user-agent" passed via --header counts as explicit (no duplicate).
+    if (!Object.keys(merged).some((k) => k.toLowerCase() === 'user-agent')) {
+      merged['User-Agent'] = DEFAULT_UA
+    }
+  }
+  const applyHeaders = (obj) => {
+    if (!obj || typeof obj !== 'object') return obj
+    const next = { ...obj }
+    next.headers = dedupeHeaders({ ...(obj.headers && typeof obj.headers === 'object' ? obj.headers : {}), ...merged })
+    if (dropUa) delete next.headers['User-Agent']
+    if (!Object.keys(next.headers).length) delete next.headers
+    return next
+  }
+  settings.providers = settings.providers || {}
+  settings.providers.custom = applyHeaders(settings.providers.custom || {})
+  settings.media = settings.media || {}
+  settings.media.providers = settings.media.providers || {}
+  settings.media.providers.custom = applyHeaders(settings.media.providers.custom || {})
+  fs.mkdirSync(userDataDir, { recursive: true })
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
+  return { settingsPath, headers: merged }
+}
+
 function backupExisting(backupDir, resourcesDir, userDataDir, ts) {
   fs.mkdirSync(backupDir, { recursive: true })
   const asarBackup = path.join(backupDir, `app.asar.bak-${ts}`)
@@ -850,6 +1126,132 @@ function backupExisting(backupDir, resourcesDir, userDataDir, ts) {
   return { asarBackup, aiSettingsBackup, aiSettingsExisted }
 }
 
+async function cmdPatchByok(opts, ctx) {
+  const { resourcesDir, asarPath, userDataDir, backupDir, appVersion } = ctx
+  const headersInjected = isHeadersInjected(asarPath)
+
+  log('GenOffice patch plan (BYOK generation: native provider support, headers-only)')
+  log(`  install dir : ${resourcesDir}`)
+  log(`  app.asar    : ${asarPath} (${fs.statSync(asarPath).size} bytes)`)
+  log(`  app version : ${appVersion || 'unknown'}`)
+  log(`  user data   : ${userDataDir}`)
+  log(`  backup dir  : ${backupDir}`)
+  const headerList = [
+    ...(opts.userAgent !== undefined ? [`User-Agent: ${opts.userAgent || '(remove)'}`] : []),
+    ...Object.entries(opts.headers || {}).map(([k, v]) => `${k}: ${v}`),
+  ]
+  log(`  headers     : ${headerList.length ? headerList.join(', ') : '(defaults: User-Agent only)'}`)
+  log(`  headers patch: ${headersInjected ? 'present' : 'absent'}`)
+
+  const skipAsar = headersInjected === true
+  if (skipAsar) {
+    warn('app.asar already has the headers patch; only ai-settings.json will be updated.')
+  } else if (headersInjected === false) {
+    warn('app.asar is missing the headers patch; patching to add it (no new backup when already backed up).')
+  }
+
+  if (isGenOfficeRunning()) {
+    fail('GenOffice appears to be running. Close it first, then re-run.')
+  }
+
+  if (!opts.yes) {
+    const ok = await confirm('Apply this patch now?')
+    if (!ok) {
+      log('Aborted.')
+      process.exit(0)
+    }
+  }
+
+  const ts = timestamp()
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'genoffice-patch-'))
+  const newAsar = path.join(resourcesDir, 'app.asar.new')
+  let b = null
+
+  try {
+    // Backup once: when no backup exists yet. Re-patches keep the original
+    // backup as the restore point.
+    const hasBackup = !!latestBackup(backupDir, 'app.asar.bak-')
+    if (hasBackup) {
+      log('app.asar backup already exists — keeping it as the restore point.')
+    } else if (!opts.dryRun) {
+      b = backupExisting(backupDir, resourcesDir, userDataDir, ts)
+      log(`Backed up app.asar -> ${b.asarBackup}`)
+      if (b.aiSettingsBackup) log(`Backed up ${AI_SETTINGS_FILE} -> ${b.aiSettingsBackup}`)
+    } else {
+      log(`[dry-run] would back up app.asar to ${backupDir}/app.asar.bak-${ts}`)
+    }
+
+    if (!skipAsar) {
+      if (!opts.dryRun) {
+        log('Extracting app.asar ...')
+        extractAsar(asarPath, tmpDir)
+      }
+      const mainJsPath = path.join(tmpDir, MAIN_JS)
+      if (!opts.dryRun && !fs.existsSync(mainJsPath)) {
+        fail(`${MAIN_JS} not found inside app.asar; unsupported version.`)
+      }
+      const result = opts.dryRun
+        ? { changed: true, chatInjected: 2, mediaInjected: true, webReqInjected: true }
+        : patchMainJsHeaders(mainJsPath)
+      if (result.changed) {
+        if (result.chatInjected > 0) log(`Injected custom-headers spread into ${result.chatInjected} chat request path(s).`)
+        if (result.mediaInjected) log('Injected custom-headers spread into the media bearer helper (images + analysis).')
+        if (result.webReqInjected) log('Injected webRequest custom-headers rewrite (Chromium fetch path).')
+      } else {
+        warn('No patchable content found in main JS; continuing with settings write.')
+      }
+      if (!opts.dryRun) {
+        log('Repacking app.asar ...')
+        packAsar(tmpDir, newAsar)
+        log(`Repacked -> ${newAsar} (${fs.statSync(newAsar).size} bytes)`)
+        fs.copyFileSync(newAsar, asarPath)
+        fs.rmSync(newAsar, { force: true })
+        log(`Installed patched app.asar -> ${asarPath}`)
+      } else {
+        log(`[dry-run] would repack and replace ${asarPath}`)
+      }
+    } else if (!opts.dryRun) {
+      log('Skipping asar extract/patch/repack (nothing to change).')
+    }
+
+    // Headers-only settings merge (keys/models untouched).
+    if (!opts.dryRun) {
+      const { settingsPath, headers } = writeAiSettingsHeaders(userDataDir, {
+        userAgent: opts.userAgent,
+        headers: opts.headers,
+      })
+      const shown = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join(', ') || '(none)'
+      log(`Wrote ${settingsPath} (providers.custom.headers + media.providers.custom.headers: ${shown})`)
+    } else {
+      log(`[dry-run] would merge headers into ${path.join(userDataDir, AI_SETTINGS_FILE)}`)
+    }
+
+    if (!opts.dryRun) {
+      const manifest = readManifest(backupDir)
+      manifest.patches.push({
+        timestamp: ts,
+        generation: 'byok',
+        appVersion: appVersion || null,
+        asarBackup: b ? `app.asar.bak-${ts}` : null,
+        asarSha256: b ? sha256(b.asarBackup) : null,
+        aiSettingsBackup: b && b.aiSettingsBackup ? `ai-settings.json.bak-${ts}` : null,
+        aiSettingsExisted: b ? b.aiSettingsExisted : false,
+        headers: {
+          ...(opts.userAgent !== undefined ? { 'User-Agent': opts.userAgent } : {}),
+          ...(opts.headers || {}),
+        },
+      })
+      writeManifest(backupDir, manifest)
+    }
+
+    log('')
+    log('Done. Restart GenOffice and use the AI panel with the custom provider.')
+    log(`To undo: node patch-genoffice.mjs restore`)
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
 async function cmdPatch(opts) {
   const install = opts.installDir ? resolveInstall(opts.installDir) : detectInstall()
 
@@ -862,6 +1264,18 @@ async function cmdPatch(opts) {
   const asarPath = install.asar
   const userDataDir = opts.userDataDir || detectUserDataDir()
   const backupDir = backupDirFor(resourcesDir, opts.backupDir)
+  const generation = detectGeneration(asarPath, resourcesDir)
+  const appVersion = installedAppVersion(resourcesDir)
+
+  // BYOK generation (0.7.793+): native bring-your-own-key, headers-only flow.
+  // No apiKey/model/baseUrl handling — those stay as configured in the app UI.
+  if (generation === 'byok') {
+    await cmdPatchByok(opts, { resourcesDir, asarPath, userDataDir, backupDir, appVersion })
+    return
+  }
+  if (generation === null) {
+    warn(`Could not determine the GenOffice generation from app.asar; assuming legacy (<=0.7.686) layout.`)
+  }
 
   if (!opts.apiKey) {
     // Reuse the key already stored in ai-settings.json so a plain
@@ -1158,14 +1572,42 @@ function cmdStatus(opts) {
     const asarPath = install.asar
     const userDataDir = opts.userDataDir || detectUserDataDir()
     const backupDir = backupDirFor(resourcesDir, opts.backupDir)
+    const generation = detectGeneration(asarPath, resourcesDir)
+    const appVersion = installedAppVersion(resourcesDir)
+
+    log(`GenOffice install : ${resourcesDir}`)
+    log(`app.asar          : ${asarPath} (${fs.statSync(asarPath).size} bytes)`)
+    log(`app version       : ${appVersion || 'unknown'}`)
+    log(`generation        : ${generation === 'byok' ? 'BYOK (0.7.793+, native provider support)' : generation === 'legacy' ? 'legacy (0.7.686 or lower, force-reset present)' : 'UNKNOWN'}`)
+
+    if (generation === 'byok') {
+      const headersInjected = isHeadersInjected(asarPath)
+      log(`headers patch     : ${headersInjected ? 'present' : 'absent'}`)
+      try {
+        const s = JSON.parse(fs.readFileSync(path.join(userDataDir, AI_SETTINGS_FILE), 'utf8'))
+        const ch = s.providers?.custom?.headers
+        const mh = s.media?.providers?.custom?.headers
+        log(`custom headers    : ${ch && Object.keys(ch).length ? JSON.stringify(ch) : '(none)'}`)
+        log(`media headers     : ${mh && Object.keys(mh).length ? JSON.stringify(mh) : '(none)'}`)
+      } catch {
+        log('custom headers    : (ai-settings.json unreadable)')
+      }
+      log(`user data         : ${userDataDir}`)
+      log(`ai-settings.json  : ${fs.existsSync(path.join(userDataDir, AI_SETTINGS_FILE)) ? 'present' : 'absent'}`)
+      log(`backup dir        : ${backupDir}`)
+      const backups = fs.existsSync(backupDir)
+        ? fs.readdirSync(backupDir).filter((f) => f.startsWith('app.asar.bak-')).sort()
+        : []
+      log(`backups           : ${backups.length ? backups.join(', ') : 'none'}`)
+      return
+    }
+
     const state = isPatched(asarPath)
     const uaInjected = isUaInjected(asarPath)
     const webReqInjected = isWebReqInjected(asarPath)
     const reasoningInjected = isReasoningInjected(asarPath)
     const rendererState = renderersPatched(resourcesDir)
 
-    log(`GenOffice install : ${resourcesDir}`)
-    log(`app.asar          : ${asarPath} (${fs.statSync(asarPath).size} bytes)`)
     log(`patch state       : ${state === true ? 'PATCHED' : state === false ? 'ORIGINAL' : 'UNKNOWN'}`)
     log(`user-agent hook   : ${uaInjected ? 'present' : 'absent'}`)
     log(`ua webRequest     : ${webReqInjected ? 'present' : 'absent'}`)
@@ -1195,11 +1637,14 @@ Commands:
   status   Show install location, patch state, and available backups.
 
 Options:
-  --provider <p>      Endpoint provider: zen | go (default: ${DEFAULT_PROVIDER})
-  --api-key <key>     OpenCode API key, Zen or Go (required for patch)
-  --model <model>     Model id (default: ${PROVIDERS[DEFAULT_PROVIDER].model} for ${DEFAULT_PROVIDER})
-  --base-url <url>    Base URL, no trailing slash (default: ${PROVIDERS[DEFAULT_PROVIDER].baseUrl})
-  --ua <ua>           User-Agent header sent to the AI endpoint (default: ${DEFAULT_UA})
+  --provider <p>      Endpoint provider: zen | go (default: ${DEFAULT_PROVIDER}; legacy generation only)
+  --api-key <key>     OpenCode API key, Zen or Go (required for patch on legacy; ignored on BYOK)
+  --model <model>     Model id (default: ${PROVIDERS[DEFAULT_PROVIDER].model} for ${DEFAULT_PROVIDER}; legacy only)
+  --base-url <url>    Base URL, no trailing slash (default: ${PROVIDERS[DEFAULT_PROVIDER].baseUrl}; legacy only)
+  --ua <ua>           User-Agent header sent to the AI endpoint (default: ${DEFAULT_UA}; pass "" to remove)
+  --header <N:V>      Extra request header for the custom endpoint, e.g. --header "x-opencode-session: abc"
+                      (repeatable; BYOK generation only; merged into providers.custom.headers and
+                      media.providers.custom.headers)
   --install-dir <d>   GenOffice install dir (auto-detected if omitted)
   --user-data <d>     GenOffice user-data dir (auto-detected if omitted)
   --backup-dir <d>    Backup dir (default: <install>/resources/backups)
@@ -1208,15 +1653,21 @@ Options:
   --help, -h          Show this help
 
 Notes:
-  patch also patches the AI-panel renderer bundles under resources/modules
-  (reasoning capture), which GenOffice updates wipe every release. Re-run
-  'node patch-genoffice.mjs patch' after an app update. Omit --api-key to reuse
-  the key already stored in ai-settings.json.
+  Legacy generation (0.7.686 and lower): patch also patches the AI-panel
+  renderer bundles under resources/modules (reasoning capture), which GenOffice
+  updates wipe every release. Re-run 'node patch-genoffice.mjs patch' after an
+  app update. Omit --api-key to reuse the key already stored in ai-settings.json.
+  BYOK generation (0.7.793 and above): GenOffice has native bring-your-own-key
+  support, so patch only injects the custom-headers spread and merges headers
+  into providers.custom.headers + media.providers.custom.headers. Keys, models
+  and base URLs stay as configured in the app UI.
 
 Examples:
   node patch-genoffice.mjs patch --api-key sk-xxxx
   node patch-genoffice.mjs patch --api-key sk-xxxx --provider go
   node patch-genoffice.mjs patch --api-key sk-xxxx --model deepseek-v4-flash-free
+  node patch-genoffice.mjs patch --ua "opencode-for-genoffice/1.1.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
+  node patch-genoffice.mjs patch --header "user-agent: opencode-for-genoffice/1.1.0" --header "x-opencode-client: cli" --header "x-opencode-project: global"
   node patch-genoffice.mjs restore
   node patch-genoffice.mjs status`)
 }
@@ -1229,6 +1680,7 @@ function parseArgs(argv) {
     model: null,
     baseUrl: null,
     userAgent: undefined,
+    headers: {},
     installDir: null,
     userDataDir: null,
     backupDir: null,
@@ -1257,6 +1709,14 @@ function parseArgs(argv) {
       opts.baseUrlExplicit = true
     } else if (a === '--ua') {
       opts.userAgent = args[++i]
+    } else if (a === '--header') {
+      const raw = args[++i] ?? ''
+      const sep = raw.indexOf(':')
+      if (sep <= 0) fail(`Bad --header ${JSON.stringify(raw)} (expected "Name: value")`, 2)
+      const name = raw.slice(0, sep).trim()
+      const value = raw.slice(sep + 1).trim()
+      if (!name || !value) fail(`Bad --header ${JSON.stringify(raw)} (expected "Name: value")`, 2)
+      opts.headers[name] = value
     } else if (a === '--install-dir') {
       opts.installDir = args[++i]
     } else if (a === '--user-data') {
